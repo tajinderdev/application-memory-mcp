@@ -766,33 +766,40 @@ static const tool_def_t TOOLS[] = {
 
     {"index_context", "Index Context History",
      "Ingest historical events (transcripts) from ThreadWeaver into the isolated history graph.",
-     "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"},
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},"
+     "\"additionalProperties\":true}"},
 
     {"get_engineering_context", "Get Engineering Context",
      "Retrieves a unified engineering context combining Codebase Graph, Database Graph, and "
      "historical Agent Memory (Patterns, Corrections, Failures).",
-     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Task description, symbol, or filename to fetch context for\"}},"
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Task description, symbol, or filename to fetch context for\"},"
+     "\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},"
      "\"required\":[\"query\"]}"},
 
     {"inspect_session", "Inspect Session",
      "Retrieves the raw event timeline for a specific session.",
-     "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\",\"description\":\"The session ID to inspect\"}},\"required\":[\"session_id\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\",\"description\":\"The session ID to inspect\"},"
+     "\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},\"required\":[\"session_id\"]}"},
 
     {"inspect_change_impact", "Inspect Change Impact",
      "Retrieves recent CHANGE_CORRELATION events matching a query.",
-     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"},"
+     "\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},\"required\":[\"query\"]}"},
 
     {"inspect_related_failures", "Inspect Related Failures",
      "Retrieves recent FAILURE_CORRELATION events matching a query.",
-     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"},"
+     "\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},\"required\":[\"query\"]}"},
 
     {"inspect_correction_history", "Inspect Correction History",
      "Retrieves CORRECTION_MEMORY events matching a query.",
-     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"},"
+     "\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},\"required\":[\"query\"]}"},
 
     {"inspect_engineering_patterns", "Inspect Engineering Patterns",
      "Retrieves ENGINEERING_PATTERN candidate rules matching a query. These are candidate patterns based on evidence, NOT absolute project rules unless explicitly confirmed.",
-     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"},"
+     "\"project\":{\"type\":\"string\",\"description\":\"Project name (optional if workspace is active)\"}},\"required\":[\"query\"]}"},
 };
 
 static const int TOOL_COUNT = sizeof(TOOLS) / sizeof(TOOLS[0]);
@@ -12412,11 +12419,13 @@ static const char *strcasestr_compat(const char *haystack, const char *needle) {
 
 /* ── Engineering Context Engine ───────────────────────────────── */
 
-static cbm_history_store_t *get_threadweaver_history(cbm_mcp_server_t *srv) {
+static cbm_history_store_t *get_threadweaver_history(cbm_mcp_server_t *srv, const char *project_in) {
     if (!srv) return NULL;
-    const char *project = (srv->current_project && srv->current_project[0])
-                              ? srv->current_project
-                              : (srv->session_project[0] ? srv->session_project : NULL);
+    const char *project = (project_in && project_in[0])
+                              ? project_in
+                              : ((srv->current_project && srv->current_project[0])
+                                     ? srv->current_project
+                                     : (srv->session_project[0] ? srv->session_project : NULL));
     if (!project || project[0] == '\0') {
         return NULL;
     }
@@ -12467,7 +12476,7 @@ static char *handle_get_engineering_context(cbm_mcp_server_t *srv, const char *a
         return cbm_mcp_text_result("Missing 'query' argument.", true);
     }
 
-    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    cbm_history_store_t *hs = get_threadweaver_history(srv, project);
     if (!hs) {
         free(query);
         if (project_arg) free(project_arg);
@@ -12496,22 +12505,27 @@ static char *handle_inspect_session(cbm_mcp_server_t *srv, const char *args) {
     char *session_id = cbm_mcp_get_string_arg(args, "session_id");
     if (!session_id) return cbm_mcp_text_result("Missing 'session_id'", true);
     
-    const char *project = (srv->current_project && srv->current_project[0])
+    char *project_arg = get_project_arg(args);
+    const char *project = project_arg ? project_arg :
+                          ((srv->current_project && srv->current_project[0])
                               ? srv->current_project
-                              : (srv->session_project[0] ? srv->session_project : NULL);
+                              : (srv->session_project[0] ? srv->session_project : NULL));
     if (!project) {
+        if (project_arg) free(project_arg);
         free(session_id);
         return cbm_mcp_text_result("No active project detected.", true);
     }
 
-    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    cbm_history_store_t *hs = get_threadweaver_history(srv, project);
     if (!hs) {
+        if (project_arg) free(project_arg);
         free(session_id);
         return cbm_mcp_text_result("Could not open ThreadWeaver history database.", true);
     }
     char *markdown = NULL;
     int rc = cbm_inspect_session(hs, project, session_id, &markdown);
     cbm_history_store_close(hs);
+    if (project_arg) free(project_arg);
     free(session_id);
     
     if (rc != 0 || !markdown) return cbm_mcp_text_result("Failed to inspect session.", true);
@@ -12524,22 +12538,27 @@ static char *handle_inspect_history_type(cbm_mcp_server_t *srv, const char *args
     char *query = cbm_mcp_get_string_arg(args, "query");
     if (!query) return cbm_mcp_text_result("Missing 'query'", true);
     
-    const char *project = (srv->current_project && srv->current_project[0])
+    char *project_arg = get_project_arg(args);
+    const char *project = project_arg ? project_arg :
+                          ((srv->current_project && srv->current_project[0])
                               ? srv->current_project
-                              : (srv->session_project[0] ? srv->session_project : NULL);
+                              : (srv->session_project[0] ? srv->session_project : NULL));
     if (!project) {
+        if (project_arg) free(project_arg);
         free(query);
         return cbm_mcp_text_result("No active project detected.", true);
     }
 
-    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    cbm_history_store_t *hs = get_threadweaver_history(srv, project);
     if (!hs) {
+        if (project_arg) free(project_arg);
         free(query);
         return cbm_mcp_text_result("Could not open ThreadWeaver history database.", true);
     }
     char *markdown = NULL;
     int rc = cbm_inspect_history_type(hs, project, event_type, query, &markdown);
     cbm_history_store_close(hs);
+    if (project_arg) free(project_arg);
     free(query);
     
     if (rc != 0 || !markdown) return cbm_mcp_text_result("Failed to inspect history.", true);
@@ -12551,22 +12570,23 @@ static char *handle_inspect_history_type(cbm_mcp_server_t *srv, const char *args
 /* ── Context History Graph Tool ───────────────────────────────── */
 
 static char *handle_index_context(cbm_mcp_server_t *srv, const char *args) {
-    (void)args;
-
-    /* ── Session project is required for scoping the history DB. ── */
-    const char *project = (srv->session_project[0])
+    char *project_arg = get_project_arg(args);
+    const char *project = project_arg ? project_arg :
+                          ((srv->session_project[0])
                               ? srv->session_project
-                              : (srv->current_project && srv->current_project[0] ? srv->current_project : NULL);
+                              : (srv->current_project && srv->current_project[0] ? srv->current_project : NULL));
     if (!project) {
+        if (project_arg) free(project_arg);
         return cbm_mcp_text_result(
             "No active session project detected.\n"
-            "Make sure you have opened a workspace folder before calling index_context.",
+            "Make sure you have opened a workspace folder or specified 'project' before calling index_context.",
             true);
     }
 
     /* ── Locate the ThreadWeaver config using the platform home dir. ── */
     const char *home = cbm_get_home_dir();
     if (!home || home[0] == '\0') {
+        if (project_arg) free(project_arg);
         return cbm_mcp_text_result(
             "Could not determine the home directory.\n"
             "index_context cannot locate the ThreadWeaver config file.",
@@ -12578,13 +12598,14 @@ static char *handle_index_context(cbm_mcp_server_t *srv, const char *args) {
              "%s/.gemini/threadweaver_api.json", home);
 
     /* ── Open the isolated history DB using common helper. ── */
-    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    cbm_history_store_t *hs = get_threadweaver_history(srv, project);
     if (!hs) {
         char msg[CBM_SZ_256 + CBM_SZ_1K];
         snprintf(msg, sizeof(msg),
                  "Failed to open history database for project '%s'.\n"
                  "Check that the cache or working directory is writable.",
                  project);
+        if (project_arg) free(project_arg);
         return cbm_mcp_text_result(msg, true);
     }
 
@@ -12592,6 +12613,7 @@ static char *handle_index_context(cbm_mcp_server_t *srv, const char *args) {
     cbm_store_t *store = srv->store ? srv->store : resolve_store(srv, project);
     if (!store) {
         cbm_history_store_close(hs);
+        if (project_arg) free(project_arg);
         return cbm_mcp_text_result("Codebase graph is not active. Please ensure the project is fully loaded before running index_context.", true);
     }
     
@@ -12600,6 +12622,7 @@ static char *handle_index_context(cbm_mcp_server_t *srv, const char *args) {
                                                     project,
                                                     &ingest_err);
     cbm_history_store_close(hs);
+    if (project_arg) free(project_arg);
 
     if (ingest_rc != 0) {
         /* Use the detailed error from the ingestion layer directly. */
