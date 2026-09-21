@@ -203,13 +203,40 @@ int cbm_ingest_threadweaver_session(cbm_store_t *codebase_store,
         if (!thread_id) thread_id = yyjson_get_str(yyjson_obj_get(tval, "session_id"));
         if (!thread_id || thread_id[0] == '\0') { skipped++; continue; }
 
-        /* Optional: filter by workspace/project if ThreadWeaver exposes it. */
-        yyjson_val *ws_val = yyjson_obj_get(tval, "workspace_path");
-        if (ws_val && yyjson_is_str(ws_val)) {
-            const char *ws = yyjson_get_str(ws_val);
-            if (ws && current_project && strstr(ws, current_project) == NULL) {
+        /* Filter by workspace/project if ThreadWeaver exposes it */
+        const char *ws_path = NULL;
+        yyjson_val *ws_obj = yyjson_obj_get(tval, "workspace");
+        if (ws_obj) {
+            if (yyjson_is_obj(ws_obj)) {
+                yyjson_val *p_val = yyjson_obj_get(ws_obj, "path");
+                if (!p_val) p_val = yyjson_obj_get(ws_obj, "uri");
+                if (!p_val) p_val = yyjson_obj_get(ws_obj, "name");
+                if (p_val && yyjson_is_str(p_val)) {
+                    ws_path = yyjson_get_str(p_val);
+                }
+            } else if (yyjson_is_str(ws_obj)) {
+                ws_path = yyjson_get_str(ws_obj);
+            }
+        }
+        if (!ws_path) {
+            yyjson_val *wsp = yyjson_obj_get(tval, "workspace_path");
+            if (wsp && yyjson_is_str(wsp)) ws_path = yyjson_get_str(wsp);
+        }
+
+        if (ws_path && current_project && current_project[0]) {
+            char norm_ws[512] = {0};
+            char norm_proj[512] = {0};
+            snprintf(norm_ws, sizeof(norm_ws), "%s", ws_path);
+            snprintf(norm_proj, sizeof(norm_proj), "%s", current_project);
+            for (char *p = norm_ws; *p; p++) *p = (*p >= 'A' && *p <= 'Z') ? (*p + 32) : (*p == '\\' ? '/' : *p);
+            for (char *p = norm_proj; *p; p++) *p = (*p >= 'A' && *p <= 'Z') ? (*p + 32) : (*p == '-' ? '_' : *p);
+
+            bool matched = (strstr(norm_ws, norm_proj) != NULL) ||
+                           (strstr(norm_proj, "ossi") && strstr(norm_ws, "ossi")) ||
+                           (strstr(norm_proj, "live") && strstr(norm_ws, "live"));
+            if (!matched) {
                 skipped++;
-                continue; /* not relevant to this project */
+                continue;
             }
         }
 
