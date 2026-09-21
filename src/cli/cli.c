@@ -113,7 +113,6 @@ static int cbm_powershell_quote_word(const char *value, char *out, size_t out_si
 #endif
 #include <time.h>
 #include <wchar.h>
-#include <zlib.h> // MAX_WBITS
 #ifdef _WIN32
 #include <io.h>
 #include "foundation/win_utf8.h"

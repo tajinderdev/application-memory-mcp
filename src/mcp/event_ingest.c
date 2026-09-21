@@ -167,11 +167,24 @@ int cbm_ingest_threadweaver_session(cbm_store_t *codebase_store,
     }
 
     yyjson_val *troot = yyjson_doc_get_root(tdoc);
-    if (!troot || !yyjson_is_arr(troot)) {
+    yyjson_val *tarr = NULL;
+    if (troot && yyjson_is_arr(troot)) {
+        tarr = troot;
+    } else if (troot && yyjson_is_obj(troot)) {
+        yyjson_val *v = yyjson_obj_get(troot, "threads");
+        if (!v) v = yyjson_obj_get(troot, "data");
+        if (!v) v = yyjson_obj_get(troot, "sessions");
+        if (!v) v = yyjson_obj_get(troot, "items");
+        if (v && yyjson_is_arr(v)) {
+            tarr = v;
+        }
+    }
+
+    if (!tarr) {
         yyjson_doc_free(tdoc);
         yyjson_doc_free(cfg_doc);
         *out_error_msg = fmt_err(
-            "ThreadWeaver /api/v1/threads did not return a JSON array.\n"
+            "ThreadWeaver /api/v1/threads did not return a valid JSON array or object containing threads.\n"
             "This may indicate an incompatible extension version.");
         return -1;
     }
@@ -181,10 +194,13 @@ int cbm_ingest_threadweaver_session(cbm_store_t *codebase_store,
     int skipped  = 0;
     size_t idx, max;
     yyjson_val *tval;
-    yyjson_arr_foreach(troot, idx, max, tval) {
+    yyjson_arr_foreach(tarr, idx, max, tval) {
         if (!yyjson_is_obj(tval)) { skipped++; continue; }
 
         const char *thread_id = yyjson_get_str(yyjson_obj_get(tval, "id"));
+        if (!thread_id) thread_id = yyjson_get_str(yyjson_obj_get(tval, "thread_id"));
+        if (!thread_id) thread_id = yyjson_get_str(yyjson_obj_get(tval, "sessionId"));
+        if (!thread_id) thread_id = yyjson_get_str(yyjson_obj_get(tval, "session_id"));
         if (!thread_id || thread_id[0] == '\0') { skipped++; continue; }
 
         /* Optional: filter by workspace/project if ThreadWeaver exposes it. */

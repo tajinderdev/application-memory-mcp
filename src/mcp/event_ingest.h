@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <stdarg.h>
 
+typedef struct cbm_store cbm_store_t;
+
 /*
  * Ingest a ThreadWeaver session into the history store.
  *
