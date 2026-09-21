@@ -229,7 +229,8 @@ FOUNDATION_SRCS = \
     src/foundation/secure_random.c \
     src/foundation/macos_acl.c \
     src/foundation/private_file_lock.c \
-    src/foundation/lock_registry.c
+    src/foundation/lock_registry.c \
+    src/foundation/http_client.c
 
 # Existing extraction C code (compiled from current location)
 EXTRACTION_SRCS = \
@@ -293,13 +294,13 @@ PREPROCESSOR_SRC = $(CBM_DIR)/preprocessor.cpp
 SQLITE_WRITER_SRC = $(CBM_DIR)/sqlite_writer.c
 
 # Store module (new)
-STORE_SRCS = src/store/store.c
+STORE_SRCS = src/store/store.c src/store/history_store.c
 
 # Cypher module (new)
 CYPHER_SRCS = src/cypher/cypher.c
 
 # MCP server module (new)
-MCP_SRCS = src/mcp/mcp.c src/mcp/index_supervisor.c src/mcp/compact_out.c
+MCP_SRCS = src/mcp/mcp.c src/mcp/index_supervisor.c src/mcp/compact_out.c src/mcp/event_ingest.c src/mcp/change_correlation.c src/mcp/failure_correlation.c src/mcp/correction_memory.c src/mcp/orchestrator.c
 
 # Shared MCP daemon coordination and local transport
 DAEMON_SRCS = \
@@ -740,7 +741,7 @@ PP_OBJ_TSAN = $(BUILD_DIR)/tsan_preprocessor.o
 
 # ── Targets ──────────────────────────────────────────────────────
 
-.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security
+.PHONY: test test-par test-repro test-foundation test-e2e-context test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -752,6 +753,14 @@ $(BUILD_DIR)/test-foundation: $(TEST_FOUNDATION_SRCS) $(FOUNDATION_SRCS) $(PROJE
 
 test-foundation: $(BUILD_DIR)/test-foundation
 	cd $(CURDIR) && $(BUILD_DIR)/test-foundation
+
+# ── End-to-end Context Pipeline test ─────────────────────────────
+
+$(BUILD_DIR)/test-e2e-context: tests/test_e2e_context_pipeline.c src/store/history_store.c src/mcp/correction_memory.c src/mcp/orchestrator.c $(YYJSON_SRC) $(SQLITE3_SRC) | $(BUILD_DIR)
+	$(CC) $(CFLAGS_TEST) -Isrc -Ivendored/yyjson -Ivendored/sqlite3 -o $@ $^ $(LDFLAGS_TEST)
+
+test-e2e-context: $(BUILD_DIR)/test-e2e-context
+	cd $(CURDIR) && $(BUILD_DIR)/test-e2e-context
 
 # ── Grammar/TS/LSP object files (compiled with relaxed warnings) ─
 

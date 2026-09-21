@@ -43,6 +43,7 @@ enum {
 #define SLEN(s) (sizeof(s) - 1)
 #include "mcp/mcp.h"
 #include "mcp/mcp_internal.h"
+#include "mcp/orchestrator.h"
 #include "store/store.h"
 #include <sqlite3.h>
 #include "cypher/cypher.h"
@@ -70,6 +71,7 @@ enum {
 #include "pipeline/artifact.h"
 #include "database/db_introspect.h"
 #include "database/erd_generator.h"
+#include "mcp/event_ingest.h"
 
 #ifdef _WIN32
 #include "foundation/win_utf8.h"
@@ -761,6 +763,36 @@ static const tool_def_t TOOLS[] = {
      "\"limit\":{\"type\":\"integer\",\"default\":50},"
      "\"offset\":{\"type\":\"integer\",\"default\":0}},"
      "\"required\":[\"project\"]}"},
+
+    {"index_context", "Index Context History",
+     "Ingest historical events (transcripts) from ThreadWeaver into the isolated history graph.",
+     "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"},
+
+    {"get_engineering_context", "Get Engineering Context",
+     "Retrieves a unified engineering context combining Codebase Graph, Database Graph, and "
+     "historical Agent Memory (Patterns, Corrections, Failures).",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Task description, symbol, or filename to fetch context for\"}},"
+     "\"required\":[\"query\"]}"},
+
+    {"inspect_session", "Inspect Session",
+     "Retrieves the raw event timeline for a specific session.",
+     "{\"type\":\"object\",\"properties\":{\"session_id\":{\"type\":\"string\",\"description\":\"The session ID to inspect\"}},\"required\":[\"session_id\"]}"},
+
+    {"inspect_change_impact", "Inspect Change Impact",
+     "Retrieves recent CHANGE_CORRELATION events matching a query.",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+
+    {"inspect_related_failures", "Inspect Related Failures",
+     "Retrieves recent FAILURE_CORRELATION events matching a query.",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+
+    {"inspect_correction_history", "Inspect Correction History",
+     "Retrieves CORRECTION_MEMORY events matching a query.",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
+
+    {"inspect_engineering_patterns", "Inspect Engineering Patterns",
+     "Retrieves ENGINEERING_PATTERN candidate rules matching a query. These are candidate patterns based on evidence, NOT absolute project rules unless explicitly confirmed.",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Symbol or filename to query\"}},\"required\":[\"query\"]}"},
 };
 
 static const int TOOL_COUNT = sizeof(TOOLS) / sizeof(TOOLS[0]);
@@ -796,6 +828,13 @@ static const tool_annotation_def_t TOOL_ANNOTATIONS[] = {
     {"generate_db_erd", true, false, true, false},
     {"get_table_data", true, false, true, false},
     {"search_database_graph", true, false, true, false},
+    {"index_context", false, false, false, false},
+    {"get_engineering_context", true, false, true, false},
+    {"inspect_session", true, false, true, false},
+    {"inspect_change_impact", true, false, true, false},
+    {"inspect_related_failures", true, false, true, false},
+    {"inspect_correction_history", true, false, true, false},
+    {"inspect_engineering_patterns", true, false, true, false},
 };
 
 static const tool_annotation_def_t *mcp_tool_annotations(const char *name) {
@@ -853,11 +892,14 @@ static bool mcp_tool_allowed(cbm_mcp_tool_profile_t profile, const char *name) {
         "index_status",     "check_index_coverage", "detect_changes",
         "get_database_schema", "generate_db_erd", "get_table_data",
         "search_database_graph",
+        "get_engineering_context", "inspect_session", "inspect_change_impact",
+        "inspect_related_failures", "inspect_correction_history", "inspect_engineering_patterns",
     };
     static const char *const scout_tools[] = {
         "search_graph",  "trace_path",   "get_code_snippet",     "get_architecture",
         "list_projects", "index_status", "check_index_coverage",
         "get_database_schema", "generate_db_erd", "search_database_graph",
+        "get_engineering_context",
     };
     if (!name) {
         return false;
@@ -12368,6 +12410,213 @@ static const char *strcasestr_compat(const char *haystack, const char *needle) {
     return NULL;
 }
 
+/* ── Engineering Context Engine ───────────────────────────────── */
+
+static cbm_history_store_t *get_threadweaver_history(cbm_mcp_server_t *srv) {
+    if (!srv) return NULL;
+    const char *project = (srv->current_project && srv->current_project[0])
+                              ? srv->current_project
+                              : (srv->session_project[0] ? srv->session_project : NULL);
+    if (!project || project[0] == '\0') {
+        return NULL;
+    }
+
+    char db_path[CBM_SZ_1K];
+    char cdir[CBM_SZ_1K];
+    cache_dir(cdir, sizeof(cdir));
+    snprintf(db_path, sizeof(db_path), "%s/history_%s.db", cdir, project);
+
+    cbm_history_store_t *hs = cbm_history_store_open(db_path);
+    if (!hs) {
+        /* Fallback to local working directory if cache dir open fails */
+        snprintf(db_path, sizeof(db_path), "history_%s.db", project);
+        hs = cbm_history_store_open(db_path);
+    }
+    if (!hs) return NULL;
+
+    if (cbm_history_store_init_schema(hs) != CBM_HISTORY_OK) {
+        cbm_history_store_close(hs);
+        return NULL;
+    }
+    return hs;
+}
+
+static char *handle_get_engineering_context(cbm_mcp_server_t *srv, const char *args) {
+    char *project_arg = get_project_arg(args);
+    const char *project = project_arg ? project_arg :
+                          ((srv->current_project && srv->current_project[0]) ? srv->current_project :
+                           (srv->session_project[0] ? srv->session_project : NULL));
+    if (!project) {
+        if (project_arg) free(project_arg);
+        return cbm_mcp_text_result("No active project detected for engineering context.", true);
+    }
+
+    cbm_store_t *store = resolve_store(srv, project);
+    if (!store) {
+        store = srv->store;
+    }
+    if (!store) {
+        if (project_arg) free(project_arg);
+        return cbm_mcp_text_result("Codebase graph is not active.", true);
+    }
+
+    char *query = cbm_mcp_get_string_arg(args, "query");
+    if (!query || strlen(query) == 0) {
+        if (query) free(query);
+        if (project_arg) free(project_arg);
+        return cbm_mcp_text_result("Missing 'query' argument.", true);
+    }
+
+    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    if (!hs) {
+        free(query);
+        if (project_arg) free(project_arg);
+        return cbm_mcp_text_result("Could not open ThreadWeaver history database.", true);
+    }
+    
+    char *markdown = NULL;
+    int rc = cbm_build_engineering_context(store, hs, project, query, &markdown);
+    
+    free(query);
+    if (project_arg) free(project_arg);
+    cbm_history_store_close(hs);
+    
+    if (rc != 0 || !markdown) {
+        return cbm_mcp_text_result("Failed to build engineering context.", true);
+    }
+    
+    char *resp = cbm_mcp_text_result(markdown, false);
+    free(markdown);
+    return resp;
+}
+
+/* ── History Inspection Tools (Phase 9) ───────────────────────── */
+
+static char *handle_inspect_session(cbm_mcp_server_t *srv, const char *args) {
+    char *session_id = cbm_mcp_get_string_arg(args, "session_id");
+    if (!session_id) return cbm_mcp_text_result("Missing 'session_id'", true);
+    
+    const char *project = (srv->current_project && srv->current_project[0])
+                              ? srv->current_project
+                              : (srv->session_project[0] ? srv->session_project : NULL);
+    if (!project) {
+        free(session_id);
+        return cbm_mcp_text_result("No active project detected.", true);
+    }
+
+    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    if (!hs) {
+        free(session_id);
+        return cbm_mcp_text_result("Could not open ThreadWeaver history database.", true);
+    }
+    char *markdown = NULL;
+    int rc = cbm_inspect_session(hs, project, session_id, &markdown);
+    cbm_history_store_close(hs);
+    free(session_id);
+    
+    if (rc != 0 || !markdown) return cbm_mcp_text_result("Failed to inspect session.", true);
+    char *resp = cbm_mcp_text_result(markdown, false);
+    free(markdown);
+    return resp;
+}
+
+static char *handle_inspect_history_type(cbm_mcp_server_t *srv, const char *args, const char *event_type) {
+    char *query = cbm_mcp_get_string_arg(args, "query");
+    if (!query) return cbm_mcp_text_result("Missing 'query'", true);
+    
+    const char *project = (srv->current_project && srv->current_project[0])
+                              ? srv->current_project
+                              : (srv->session_project[0] ? srv->session_project : NULL);
+    if (!project) {
+        free(query);
+        return cbm_mcp_text_result("No active project detected.", true);
+    }
+
+    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    if (!hs) {
+        free(query);
+        return cbm_mcp_text_result("Could not open ThreadWeaver history database.", true);
+    }
+    char *markdown = NULL;
+    int rc = cbm_inspect_history_type(hs, project, event_type, query, &markdown);
+    cbm_history_store_close(hs);
+    free(query);
+    
+    if (rc != 0 || !markdown) return cbm_mcp_text_result("Failed to inspect history.", true);
+    char *resp = cbm_mcp_text_result(markdown, false);
+    free(markdown);
+    return resp;
+}
+
+/* ── Context History Graph Tool ───────────────────────────────── */
+
+static char *handle_index_context(cbm_mcp_server_t *srv, const char *args) {
+    (void)args;
+
+    /* ── Session project is required for scoping the history DB. ── */
+    const char *project = (srv->session_project[0])
+                              ? srv->session_project
+                              : (srv->current_project && srv->current_project[0] ? srv->current_project : NULL);
+    if (!project) {
+        return cbm_mcp_text_result(
+            "No active session project detected.\n"
+            "Make sure you have opened a workspace folder before calling index_context.",
+            true);
+    }
+
+    /* ── Locate the ThreadWeaver config using the platform home dir. ── */
+    const char *home = cbm_get_home_dir();
+    if (!home || home[0] == '\0') {
+        return cbm_mcp_text_result(
+            "Could not determine the home directory.\n"
+            "index_context cannot locate the ThreadWeaver config file.",
+            true);
+    }
+
+    char config_path[CBM_SZ_1K];
+    snprintf(config_path, sizeof(config_path),
+             "%s/.gemini/threadweaver_api.json", home);
+
+    /* ── Open the isolated history DB using common helper. ── */
+    cbm_history_store_t *hs = get_threadweaver_history(srv);
+    if (!hs) {
+        char msg[CBM_SZ_256 + CBM_SZ_1K];
+        snprintf(msg, sizeof(msg),
+                 "Failed to open history database for project '%s'.\n"
+                 "Check that the cache or working directory is writable.",
+                 project);
+        return cbm_mcp_text_result(msg, true);
+    }
+
+    /* ── Ingest from ThreadWeaver (error message produced by callee). ── */
+    cbm_store_t *store = srv->store ? srv->store : resolve_store(srv, project);
+    if (!store) {
+        cbm_history_store_close(hs);
+        return cbm_mcp_text_result("Codebase graph is not active. Please ensure the project is fully loaded before running index_context.", true);
+    }
+    
+    char *ingest_err = NULL;
+    int ingest_rc = cbm_ingest_threadweaver_session(store, hs, config_path,
+                                                    project,
+                                                    &ingest_err);
+    cbm_history_store_close(hs);
+
+    if (ingest_rc != 0) {
+        /* Use the detailed error from the ingestion layer directly. */
+        char *result = cbm_mcp_text_result(
+            ingest_err ? ingest_err
+                       : "Unknown error during ThreadWeaver ingestion.",
+            true);
+        free(ingest_err);
+        return result;
+    }
+
+    free(ingest_err); /* should be NULL on success, but guard anyway */
+    return cbm_mcp_text_result(
+        "ThreadWeaver context successfully ingested into the history graph.", false);
+}
+
+
 /* ── Tool dispatch ────────────────────────────────────────────── */
 
 static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const char *args_json) {
@@ -12427,6 +12676,27 @@ static char *dispatch_tool(cbm_mcp_server_t *srv, const char *tool_name, const c
     }
     if (strcmp(tool_name, "ingest_traces") == 0) {
         return handle_ingest_traces(srv, args_json);
+    }
+    if (strcmp(tool_name, "index_context") == 0) {
+        return handle_index_context(srv, args_json);
+    }
+    if (strcmp(tool_name, "get_engineering_context") == 0) {
+        return handle_get_engineering_context(srv, args_json);
+    }
+    if (strcmp(tool_name, "inspect_session") == 0) {
+        return handle_inspect_session(srv, args_json);
+    }
+    if (strcmp(tool_name, "inspect_change_impact") == 0) {
+        return handle_inspect_history_type(srv, args_json, "CHANGE_CORRELATION");
+    }
+    if (strcmp(tool_name, "inspect_related_failures") == 0) {
+        return handle_inspect_history_type(srv, args_json, "FAILURE_CORRELATION");
+    }
+    if (strcmp(tool_name, "inspect_correction_history") == 0) {
+        return handle_inspect_history_type(srv, args_json, "CORRECTION_MEMORY");
+    }
+    if (strcmp(tool_name, "inspect_engineering_patterns") == 0) {
+        return handle_inspect_history_type(srv, args_json, "ENGINEERING_PATTERN");
     }
 
     /* Database tools */
