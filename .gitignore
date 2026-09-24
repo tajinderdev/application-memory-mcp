@@ -88,3 +88,9 @@ soak-results-query-leak/
 /pkg/go/codebase-memory-mcp.exe
 
 /.agents
+
+# Local scratch scripts & one-off test files (never committed)
+scratch/
+
+# Playwright MCP browser state (local session data, screenshots, traces)
+.playwright-mcp/
