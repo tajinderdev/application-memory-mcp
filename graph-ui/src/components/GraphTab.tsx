@@ -25,6 +25,9 @@ import { NodeDetailPanel } from "./NodeDetailPanel";
 import { MissedCallout } from "./MissedCallout";
 import { ResizeHandle } from "./ResizeHandle";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { ContextGraph } from "./ContextGraph";
+import { DatabaseGraph } from "./DatabaseGraph";
+import { OrchestratorFlow } from "./OrchestratorFlow";
 import type { GraphNode, GraphData, RepoInfo } from "../lib/types";
 import { colorForStatus } from "../lib/colors";
 
@@ -81,6 +84,7 @@ export function GraphTab({ project }: GraphTabProps) {
   }, []);
   const [leftWidth, setLeftWidth] = useState(() => loadWidth("cbm-left-w", 260));
   const [rightWidth, setRightWidth] = useState(() => loadWidth("cbm-right-w", 280));
+  const [viewType, setViewType] = useState<"codebase" | "database" | "context" | "orchestrator">("codebase");
   const limitNotice = formatGraphLimitNotice(data);
 
   /* Node budget — keyed to its project so switching projects re-reads the
@@ -143,7 +147,10 @@ export function GraphTab({ project }: GraphTabProps) {
     /* Recolor by status when the dead-code view is on */
     const paint = (n: GraphNode): GraphNode =>
       deadCodeView ? { ...n, color: colorForStatus(n.status) } : n;
-    const keep = (n: GraphNode) => enabledLabels.has(n.label) && statusOk(n);
+    
+    const keep = (n: GraphNode) => {
+      return enabledLabels.has(n.label) && statusOk(n);
+    };
 
     const nodes = data.nodes.filter(keep).map(paint);
     const nodeIds = new Set(nodes.map((n) => n.id));
@@ -356,238 +363,270 @@ export function GraphTab({ project }: GraphTabProps) {
     );
   }
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <GraphLoader nodeBudget={budget.value} progress={progress} />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-center p-8">
-          <p className="text-red-400 text-sm mb-2">{error}</p>
-          <Button variant="outline" size="sm" onClick={() => fetchOverview(project)}>
-            Retry
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  /* No data, or the project genuinely has no nodes — there are no filters to
-     interact with, so show a plain full-screen message. The "all filtered out"
-     case is handled inside the layout below so the filter sidebar stays put. */
-  if (!data || !filteredData || data.nodes.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-white/30 text-sm">No nodes in this project</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="h-full flex">
-      {/* Left sidebar — resizable */}
-      <div
-        className="border-r border-border/30 flex flex-col h-full bg-[#0b1920]/90 backdrop-blur-md shrink-0"
-        style={{ width: leftWidth }}
-      >
-        <FilterPanel
-          data={data}
-          enabledLabels={enabledLabels}
-          enabledEdgeTypes={enabledEdgeTypes}
-          showLabels={showLabels}
-          onToggleLabel={toggleLabel}
-          onToggleEdgeType={toggleEdgeType}
-          onToggleShowLabels={() => setShowLabels((v) => !v)}
-          onEnableAll={enableAll}
-          onDisableAll={disableAll}
-          deadCodeView={deadCodeView}
-          showOnlyDead={showOnlyDead}
-          hideEntryPoints={hideEntryPoints}
-          hideTests={hideTests}
-          onToggleDeadCodeView={() => setDeadCodeView((v) => !v)}
-          onToggleShowOnlyDead={() => setShowOnlyDead((v) => !v)}
-          onToggleHideEntryPoints={() => setHideEntryPoints((v) => !v)}
-          onToggleHideTests={() => setHideTests((v) => !v)}
-          missedView={showMissedSkeleton}
-          missedCount={data?.missed_graph?.nodes.filter((n) => n.label === "File").length ?? 0}
-          onToggleMissedView={() => setShowMissedSkeleton((v) => !v)}
-        />
-        <Sidebar
-          nodes={filteredData.nodes}
-          onSelectPath={handleSelectPath}
-          selectedPath={selectedPath}
-        />
+    <div className="h-full flex flex-col bg-[#040d12]">
+      {/* Universal Tab Switcher Header */}
+      <div className="flex bg-[#08151c]/90 backdrop-blur-md border-b border-border/30 px-4 py-2 gap-2 justify-center shrink-0 z-20">
+        <Button
+          variant={viewType === "codebase" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setViewType("codebase")}
+          className={viewType === "codebase" ? "bg-cyan-600 hover:bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : ""}
+        >
+          🌐 Codebase Graph
+        </Button>
+        <Button
+          variant={viewType === "database" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setViewType("database")}
+          className={viewType === "database" ? "bg-cyan-600 hover:bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : ""}
+        >
+          🗄️ Database Graph & ERD
+        </Button>
+        <Button
+          variant={viewType === "context" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setViewType("context")}
+          className={viewType === "context" ? "bg-cyan-600 hover:bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : ""}
+        >
+          🕰️ Context Timeline
+        </Button>
+        <Button
+          variant={viewType === "orchestrator" ? "default" : "outline"}
+          size="sm"
+          onClick={() => setViewType("orchestrator")}
+          className={viewType === "orchestrator" ? "bg-cyan-600 hover:bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]" : ""}
+        >
+          ⚡ Orchestrator Pipeline
+        </Button>
       </div>
-      <ResizeHandle
-        side="left"
-        onResize={(d) => {
-          setLeftWidth((w) => {
-            const nw = Math.max(150, Math.min(500, w + d));
-            saveWidth("cbm-left-w", nw);
-            return nw;
-          });
-        }}
-      />
 
-      {/* Graph area */}
-      <div className="flex-1 relative overflow-hidden">
-        {filteredData.nodes.length === 0 ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center">
-              <p className="text-white/30 text-sm mb-3">All nodes filtered out</p>
-              <Button size="sm" onClick={enableAll}>
-                Reset Filters
-              </Button>
+      {/* Tab Contents */}
+      <div className="flex-1 relative overflow-hidden flex">
+        <ErrorBoundary>
+          {viewType === "database" ? (
+            <DatabaseGraph project={project!} />
+          ) : viewType === "context" ? (
+            <ContextGraph project={project!} />
+          ) : viewType === "orchestrator" ? (
+            <OrchestratorFlow />
+          ) : loading ? (
+            <div className="flex-1 flex items-center justify-center">
+              <GraphLoader nodeBudget={budget.value} progress={progress} />
             </div>
-          </div>
-        ) : (
-          <>
-            <ErrorBoundary>
-              <GraphScene
-                data={filteredData}
-                missed={showMissedSkeleton ? missedSkeleton : null}
-                highlightedIds={highlightedIds}
-                cameraTarget={cameraTarget}
-                showLabels={showLabels}
-                display={display}
-                onNodeClick={handleNodeClick}
-                onBackgroundClick={handleBackgroundClick}
-              />
-            </ErrorBoundary>
-
-            {/* HUD */}
-            <div className="absolute top-4 left-4 text-[11px] text-white/30 pointer-events-none font-mono">
-              <p>
-                {filteredData.nodes.length.toLocaleString()} nodes /{" "}
-                {filteredData.edges.length.toLocaleString()} edges
-              </p>
-              {data.nodes.length > filteredData.nodes.length && (
-                <p className="text-white/25 mt-0.5">
-                  filtered from {data.nodes.length.toLocaleString()}
-                </p>
-              )}
-              {limitNotice && (
-                <p className="text-amber-300/80 mt-0.5">{limitNotice}</p>
-              )}
-              {highlightedIds && highlightedIds.size > 0 && (
-                <p className="text-cyan-400/50 mt-0.5">
-                  {highlightedIds.size} selected
-                </p>
-              )}
-            </div>
-
-            <div className="absolute top-4 right-4 flex gap-2 items-center">
-              {highlightedIds && (
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setHighlightedIds(null);
-                    setSelectedPath(null);
-                    setSelectedNode(null);
-                    setCameraTarget(null);
-                  }}
-                >
-                  Clear selection
+          ) : error ? (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center p-8">
+                <p className="text-red-400 text-sm mb-2">{error}</p>
+                <Button variant="outline" size="sm" onClick={() => fetchOverview(project, budget.value)}>
+                  Retry
                 </Button>
-              )}
-              <div className="flex items-center gap-1.5 h-8 px-2 rounded-md border border-border/50 bg-[#0b1920]/80 backdrop-blur-sm">
-                <label
-                  htmlFor="node-budget"
-                  className="text-[10px] uppercase tracking-wider text-white/40"
-                >
-                  Nodes
-                </label>
-                <input
-                  id="node-budget"
-                  type="number"
-                  min={GRAPH_NODE_BUDGET_STEP}
-                  max={GRAPH_NODE_BUDGET_MAX}
-                  step={GRAPH_NODE_BUDGET_STEP}
-                  value={budgetDraft}
-                  onChange={(e) => setBudgetDraft(e.target.value)}
-                  onBlur={commitBudget}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.currentTarget.blur();
-                    }
-                  }}
-                  className="w-24 bg-transparent text-right text-xs font-mono text-cyan-200/90 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  aria-label="Node budget: how many nodes to load"
-                  title="How many nodes to load (5,000 steps, edges between loaded nodes follow automatically)"
+              </div>
+            </div>
+          ) : !data || !filteredData || data.nodes.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center">
+              <p className="text-white/30 text-sm">No nodes in this project</p>
+            </div>
+          ) : (
+            /* Codebase 3D Graph Layout with sidebars */
+            <div className="flex-1 flex h-full overflow-hidden">
+              {/* Left sidebar — resizable */}
+              <div
+                className="border-r border-border/30 flex flex-col h-full bg-[#0b1920]/90 backdrop-blur-md shrink-0"
+                style={{ width: leftWidth }}
+              >
+                <FilterPanel
+                  data={data}
+                  enabledLabels={enabledLabels}
+                  enabledEdgeTypes={enabledEdgeTypes}
+                  showLabels={showLabels}
+                  onToggleLabel={toggleLabel}
+                  onToggleEdgeType={toggleEdgeType}
+                  onToggleShowLabels={() => setShowLabels((v) => !v)}
+                  onEnableAll={enableAll}
+                  onDisableAll={disableAll}
+                  deadCodeView={deadCodeView}
+                  showOnlyDead={showOnlyDead}
+                  hideEntryPoints={hideEntryPoints}
+                  hideTests={hideTests}
+                  onToggleDeadCodeView={() => setDeadCodeView((v) => !v)}
+                  onToggleShowOnlyDead={() => setShowOnlyDead((v) => !v)}
+                  onToggleHideEntryPoints={() => setHideEntryPoints((v) => !v)}
+                  onToggleHideTests={() => setHideTests((v) => !v)}
+                  missedView={showMissedSkeleton}
+                  missedCount={data?.missed_graph?.nodes.filter((n) => n.label === "File").length ?? 0}
+                  onToggleMissedView={() => setShowMissedSkeleton((v) => !v)}
+                />
+                <Sidebar
+                  nodes={filteredData.nodes}
+                  onSelectPath={handleSelectPath}
+                  selectedPath={selectedPath}
                 />
               </div>
-              <DisplaySettingsMenu settings={display} onChange={updateDisplay} />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setHighlightedIds(null);
-                  setSelectedPath(null);
-                  setSelectedNode(null);
-                  setCameraTarget(null);
-                  fetchOverview(project, budget.value);
+              <ResizeHandle
+                side="left"
+                onResize={(d) => {
+                  setLeftWidth((w) => {
+                    const nw = Math.max(150, Math.min(500, w + d));
+                    saveWidth("cbm-left-w", nw);
+                    return nw;
+                  });
                 }}
-              >
-                Refresh
-              </Button>
-            </div>
-          </>
-        )}
-      </div>
+              />
 
-      {/* Right detail panel — resizable */}
-      {selectedNode && filteredData && (
-        <>
-          <ResizeHandle
-            side="right"
-            onResize={(d) => {
-              setRightWidth((w) => {
-                const nw = Math.max(200, Math.min(500, w + d));
-                saveWidth("cbm-right-w", nw);
-                return nw;
-              });
-            }}
-          />
-          <div
-            className="border-l border-border shrink-0 h-full overflow-hidden"
-            style={{ width: rightWidth, maxHeight: "100%" }}
-          >
-            {missedSkeleton?.ids.has(selectedNode.id) ? (
-              /* Skeleton node: the standard panel (code snippet, callers) is
-               * meaningless for a not-fully-indexed file — show the coverage
-               * callout with its report-the-edge-case actions instead. */
-              <MissedCallout
-                node={selectedNode}
-                project={project}
-                onClose={() => {
-                  setSelectedNode(null);
-                  setHighlightedIds(null);
-                  setSelectedPath(null);
-                }}
-              />
-            ) : (
-              <NodeDetailPanel
-                node={selectedNode}
-                allNodes={filteredData.nodes}
-                allEdges={filteredData.edges}
-                project={project}
-                repoInfo={repoInfo}
-                onClose={() => {
-                  setSelectedNode(null);
-                  setHighlightedIds(null);
-                  setSelectedPath(null);
-                }}
-                onNavigate={handleNavigateToNode}
-              />
-            )}
-          </div>
-        </>
-      )}
+              {/* 3D Scene View */}
+              <div className="flex-1 relative overflow-hidden flex flex-col">
+                {filteredData.nodes.length === 0 ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center">
+                      <p className="text-white/30 text-sm mb-3">All nodes filtered out</p>
+                      <Button size="sm" onClick={enableAll}>
+                        Reset Filters
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <GraphScene
+                      data={filteredData}
+                      missed={showMissedSkeleton ? missedSkeleton : null}
+                      highlightedIds={highlightedIds}
+                      cameraTarget={cameraTarget}
+                      showLabels={showLabels}
+                      display={display}
+                      onNodeClick={handleNodeClick}
+                      onBackgroundClick={handleBackgroundClick}
+                    />
+
+                    {/* HUD */}
+                    <div className="absolute top-4 left-4 text-[11px] text-white/30 pointer-events-none font-mono">
+                      <p>
+                        {filteredData.nodes.length.toLocaleString()} nodes /{" "}
+                        {filteredData.edges.length.toLocaleString()} edges
+                      </p>
+                      {data.nodes.length > filteredData.nodes.length && (
+                        <p className="text-white/25 mt-0.5">
+                          filtered from {data.nodes.length.toLocaleString()}
+                        </p>
+                      )}
+                      {limitNotice && (
+                        <p className="text-amber-300/80 mt-0.5">{limitNotice}</p>
+                      )}
+                      {highlightedIds && highlightedIds.size > 0 && (
+                        <p className="text-cyan-400/50 mt-0.5">
+                          {highlightedIds.size} selected
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="absolute top-4 right-4 flex gap-2 items-center">
+                      {highlightedIds && (
+                        <Button
+                          size="sm"
+                          onClick={() => {
+                            setHighlightedIds(null);
+                            setSelectedPath(null);
+                            setSelectedNode(null);
+                            setCameraTarget(null);
+                          }}
+                        >
+                          Clear selection
+                        </Button>
+                      )}
+                      <div className="flex items-center gap-1.5 h-8 px-2 rounded-md border border-border/50 bg-[#0b1920]/80 backdrop-blur-sm">
+                        <label
+                          htmlFor="node-budget"
+                          className="text-[10px] uppercase tracking-wider text-white/40"
+                        >
+                          Nodes
+                        </label>
+                        <input
+                          id="node-budget"
+                          type="number"
+                          min={GRAPH_NODE_BUDGET_STEP}
+                          max={GRAPH_NODE_BUDGET_MAX}
+                          step={GRAPH_NODE_BUDGET_STEP}
+                          value={budgetDraft}
+                          onChange={(e) => setBudgetDraft(e.target.value)}
+                          onBlur={commitBudget}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          className="w-24 bg-transparent text-right text-xs font-mono text-cyan-200/90 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          aria-label="Node budget: how many nodes to load"
+                          title="How many nodes to load (5,000 steps, edges between loaded nodes follow automatically)"
+                        />
+                      </div>
+                      <DisplaySettingsMenu settings={display} onChange={updateDisplay} />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setHighlightedIds(null);
+                          setSelectedPath(null);
+                          setSelectedNode(null);
+                          setCameraTarget(null);
+                          fetchOverview(project, budget.value);
+                        }}
+                      >
+                        Refresh
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Right detail panel — resizable */}
+              {selectedNode && filteredData && (
+                <>
+                  <ResizeHandle
+                    side="right"
+                    onResize={(d) => {
+                      setRightWidth((w) => {
+                        const nw = Math.max(200, Math.min(500, w + d));
+                        saveWidth("cbm-right-w", nw);
+                        return nw;
+                      });
+                    }}
+                  />
+                  <div
+                    className="border-l border-border shrink-0 h-full overflow-hidden"
+                    style={{ width: rightWidth, maxHeight: "100%" }}
+                  >
+                    {missedSkeleton?.ids.has(selectedNode.id) ? (
+                      <MissedCallout
+                        node={selectedNode}
+                        project={project}
+                        onClose={() => {
+                          setSelectedNode(null);
+                          setHighlightedIds(null);
+                          setSelectedPath(null);
+                        }}
+                      />
+                    ) : (
+                      <NodeDetailPanel
+                        node={selectedNode}
+                        allNodes={filteredData.nodes}
+                        allEdges={filteredData.edges}
+                        project={project}
+                        repoInfo={repoInfo}
+                        onClose={() => {
+                          setSelectedNode(null);
+                          setHighlightedIds(null);
+                          setSelectedPath(null);
+                        }}
+                        onNavigate={handleNavigateToNode}
+                      />
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </ErrorBoundary>
+      </div>
     </div>
   );
 }

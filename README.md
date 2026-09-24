@@ -137,13 +137,51 @@ The ordinary `cli` mode is intentionally separate: it runs one command locally a
 
 ### Graph Visualization UI
 
-The graph UI is built into the binary — every install on every channel has it. Then run it:
+The graph UI is built into the binary — every install on every channel has it. Run it:
 
 ```bash
 codebase-memory-mcp --ui=true --port=9749
 ```
 
 Open `http://localhost:9749` in your browser. The UI is owned by the shared coordination daemon, so concurrent agent sessions do not start duplicate HTTP servers.
+
+The UI exposes **four interactive visualization tabs** for each indexed project:
+
+#### 🌐 Codebase Graph
+A fully interactive **3D force-directed graph** of your entire codebase. Functions, classes, routes, and files are rendered as nodes in 3D space; call chains, imports, and inheritance relationships appear as edges. Features:
+- Pan, rotate, and zoom the 3D scene
+- Click any node to highlight its direct connections and open a detail panel (file path, label, callers, callees, GitHub deep-link)
+- Filter by node label type (Function, Class, File, Route, …) and edge type (CALLS, IMPORTS, INHERITS, …)
+- Dead-code view: recolour nodes by liveness status (dead / entry / test / reachable)
+- Missed-file skeleton: ghost cluster of files the indexer could not fully parse — shown beside the main galaxy
+- Resizable left filter sidebar + right node-detail sidebar
+- Node budget control (default 5,000 nodes; raise or lower per project)
+
+#### 🗄️ Database Graph & ERD
+A **MySQL Workbench-style ERD** built from the live database schema introspected by `get_database_schema` and `generate_db_erd`. Features:
+- Draggable table nodes with full column lists — primary keys (🔑) and foreign keys (🔗) highlighted
+- Bezier relation curves with hover tooltips showing cardinality labels
+- GPU-accelerated pan and zoom via `translate3d` — smooth 60 fps even on large schemas
+- Schema Explorer sidebar: searchable table list with column drill-down and sample-data preview (fetched via `get_table_data`)
+- Relation filter: show all relations, connected-only, or selected-table-only
+- Copy Mermaid ERD button: exports the raw Mermaid markdown for use in docs
+
+#### 🕰️ Context Timeline
+A **chronological event timeline** of all engineering-memory events recorded during agentic sessions — powered by `get_engineering_context`. Events include:
+- `ENGINEERING_PATTERN` — repeated coding patterns detected across sessions
+- `CHANGE_CORRELATION` — git-diff impact maps linking code changes to affected symbols
+- `FAILURE_CORRELATION` — execution failure traces and error clusters
+- `CORRECTION_MEMORY` — user and self-corrections captured for future guidance
+
+Each event card is expandable to reveal its full JSON payload. Filter by event type or free-text search across all events.
+
+#### ⚡ Orchestrator Pipeline
+An **interactive flowchart** of the internal MCP orchestration pipeline — showing how a user query flows through the Orchestrator, Pattern Matching (Tier 1 & 2), Graph Search (Tier 3), Synthesis, and final Unified Context output. Features:
+- Draggable pipeline nodes — rearrange freely on the canvas
+- Pan and zoom the whole diagram (scroll wheel or toolbar buttons)
+- Click any node to open a details sidebar with status, throughput, and metric indicators
+- Animated Bezier data-flow edges with glowing dashed gradients
+- Reset View button to recentre the diagram
 
 ### Auto-Index
 
@@ -897,6 +935,27 @@ Every release is verified through a multi-layer pipeline before publication:
 
 Scan links for every release are also included in the GitHub Release notes automatically.
 
+## Attribution & Credits
+
+This project is a fork of **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** by [DeusData](https://github.com/DeusData), released under the [MIT License](https://github.com/DeusData/codebase-memory-mcp/blob/main/LICENSE).
+
+The core engine — graph indexing, tree-sitter parsing, Hybrid LSP, Database Knowledge Graph, MCP tool definitions, install scripts, and the binary distribution pipeline — was built by the DeusData team. The original work is described in the research preprint:
+
+> *Codebase-Memory: Tree-Sitter-Based Knowledge Graphs for LLM Code Exploration via MCP* — arXiv:2603.27277
+
+### What this fork adds
+
+Built on top of the original engine, this fork (`application-memory-mcp`) extends the graph UI with:
+
+| Feature | Description |
+|---|---|
+| **Database Graph & ERD** | MySQL Workbench-style interactive ERD with draggable table nodes, Bezier FK relations, sample-data inspector, and GPU-accelerated 60 fps pan/zoom |
+| **Context Timeline** | Chronological event view of engineering-memory records (patterns, change correlations, failure traces, corrections) with expandable JSON payloads |
+| **Orchestrator Pipeline** | Interactive flowchart of the MCP query pipeline with draggable nodes, animated data-flow edges, and a node detail sidebar |
+| **Bug fixes** | Tab-switcher now accessible regardless of codebase indexing state; glow SVG paths synced with animated paths; TypeScript errors resolved |
+
+All original copyright notices are preserved in [LICENSE](LICENSE) as required by the MIT License.
+
 ## License
 
-MIT
+MIT — original copyright © 2025 DeusData. See [LICENSE](LICENSE).

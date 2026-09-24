@@ -40,8 +40,12 @@ export async function callTool<T = unknown>(
   /* MCP tool results are wrapped: { result: { content: [{ text: "..." }] } } */
   const text = json?.result?.content?.[0]?.text;
   if (text === undefined) {
-    return json.result as T;
+    return (json?.result?.structuredContent ?? json.result) as T;
   }
 
-  return JSON.parse(text) as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as unknown as T;
+  }
 }

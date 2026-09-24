@@ -567,7 +567,7 @@ static void host_state_free(host_state_t *host) {
 
 static bool host_state_prepare(host_state_t *host, const cbm_daemon_ipc_endpoint_t *endpoint) {
     host->http_ops = &g_host_http_default_ops;
-    host->http_assets_available = CBM_EMBEDDED_FILE_COUNT > 0;
+    host->http_assets_available = true;
     if (!cbm_secure_random(host->ui_readiness_secret, sizeof(host->ui_readiness_secret))) {
         cbm_log_error("daemon.readiness_secret_failed", "reason", "system_rng_unavailable");
         return false;

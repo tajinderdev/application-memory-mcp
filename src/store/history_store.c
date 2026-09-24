@@ -46,6 +46,10 @@ cbm_history_store_t *cbm_history_store_open(const char *db_path) {
     return hs;
 }
 
+struct sqlite3 *cbm_history_store_get_db(cbm_history_store_t *hs) {
+    return hs ? hs->db : NULL;
+}
+
 void cbm_history_store_close(cbm_history_store_t *hs) {
     if (!hs) return;
     if (hs->stmt_append) {

@@ -19,6 +19,9 @@ typedef struct cbm_history_store cbm_history_store_t;
 /* Open or create a history store database at the given filesystem path. */
 cbm_history_store_t *cbm_history_store_open(const char *db_path);
 
+/* Get the sqlite3 handle. */
+struct sqlite3 *cbm_history_store_get_db(cbm_history_store_t *hs);
+
 /* Close the history store handle. */
 void cbm_history_store_close(cbm_history_store_t *hs);
 

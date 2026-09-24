@@ -19,6 +19,7 @@
 #include "ui/layout3d.h"
 #include "mcp/mcp.h"
 #include "store/store.h"
+#include "store/history_store.h"
 #include "watcher/watcher.h"
 #include "cli/cli.h"
 #include "git/git_context.h"
@@ -1324,6 +1325,81 @@ static void handle_project_health(cbm_http_conn_t *c, const cbm_http_req_t *req)
                     node_count, edge_count, (long long)size);
 }
 
+/* ── Handle GET /api/layout-context ────────────────────────────── */
+
+static void handle_api_layout_context(cbm_http_conn_t *c, const cbm_http_req_t *req) {
+    char project[256] = {0};
+    if (!cbm_http_query_param(req->query, "project", project, (int)sizeof(project)) || project[0] == '\0') {
+        cbm_http_replyf(c, 400, g_cors_json, "{\"error\":\"missing project parameter\"}");
+        return;
+    }
+
+    char db_path[1024];
+    const char *dir = cbm_resolve_cache_dir();
+    if (!dir) dir = cbm_tmpdir();
+    snprintf(db_path, sizeof(db_path), "%s/history_%s.db", dir, project);
+
+    cbm_history_store_t *hs = cbm_history_store_open(db_path);
+    if (!hs) {
+        cbm_http_replyf(c, 404, g_cors_json, "{\"error\":\"history store not found for project\"}");
+        return;
+    }
+
+    yyjson_mut_doc *mdoc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *arr = yyjson_mut_arr(mdoc);
+    yyjson_mut_doc_set_root(mdoc, arr);
+
+    struct sqlite3 *db = cbm_history_store_get_db(hs);
+    if (db) {
+        sqlite3_stmt *stmt = NULL;
+        const char *sql = "SELECT id, timestamp_ms, event_type, payload_json FROM session_events "
+                          "WHERE project = ? AND event_type IN ('CHANGE_CORRELATION', 'FAILURE_CORRELATION', 'CORRECTION_MEMORY', 'ENGINEERING_PATTERN') "
+                          "ORDER BY timestamp_ms DESC LIMIT 500";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, project, -1, SQLITE_TRANSIENT);
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                int64_t id = sqlite3_column_int64(stmt, 0);
+                int64_t ts = sqlite3_column_int64(stmt, 1);
+                const char *etype = (const char *)sqlite3_column_text(stmt, 2);
+                const char *payload_str = (const char *)sqlite3_column_text(stmt, 3);
+                
+                yyjson_mut_val *obj = yyjson_mut_obj(mdoc);
+                yyjson_mut_obj_add_int(mdoc, obj, "id", id);
+                yyjson_mut_obj_add_int(mdoc, obj, "timestamp_ms", ts);
+                yyjson_mut_obj_add_strcpy(mdoc, obj, "event_type", etype ? etype : "");
+                
+                if (payload_str && payload_str[0]) {
+                    yyjson_doc *pdoc = yyjson_read(payload_str, strlen(payload_str), 0);
+                    if (pdoc) {
+                        yyjson_val *proot = yyjson_doc_get_root(pdoc);
+                        if (proot) {
+                            yyjson_mut_val *mroot = yyjson_val_mut_copy(mdoc, proot);
+                            if (mroot) {
+                                yyjson_mut_obj_add_val(mdoc, obj, "payload", mroot);
+                            }
+                        }
+                        yyjson_doc_free(pdoc);
+                    }
+                }
+                yyjson_mut_arr_add_val(arr, obj);
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    cbm_history_store_close(hs);
+
+    char *json_out = yyjson_mut_write(mdoc, 0, NULL);
+    yyjson_mut_doc_free(mdoc);
+    if (!json_out) {
+        cbm_http_replyf(c, 500, g_cors_json, "{\"error\":\"failed to serialize context events\"}");
+        return;
+    }
+
+    cbm_http_replyf(c, 200, g_cors_json, "%s", json_out);
+    free(json_out);
+}
+
 /* ── Handle GET /api/layout ───────────────────────────────────── */
 
 /* Find distinct target_project values from CROSS_* edges in a store.
@@ -1721,9 +1797,31 @@ static bool rpc_is_allowed_for_ui(const char *body, size_t body_len) {
     yyjson_val *name = json_unique_member(params, "name");
     const char *method_text = yyjson_is_str(method) ? yyjson_get_str(method) : NULL;
     const char *name_text = yyjson_is_str(name) ? yyjson_get_str(name) : NULL;
-    bool allowed =
-        method_text && strcmp(method_text, "tools/call") == 0 && name_text &&
-        (strcmp(name_text, "list_projects") == 0 || strcmp(name_text, "get_code_snippet") == 0);
+    if (!method_text) {
+        yyjson_doc_free(document);
+        return false;
+    }
+    if (strcmp(method_text, "tools/list") == 0 || strcmp(method_text, "initialize") == 0) {
+        yyjson_doc_free(document);
+        return true;
+    }
+    bool allowed = false;
+    if (strcmp(method_text, "tools/call") == 0 && name_text) {
+        static const char *const allowed_tools[] = {
+            "list_projects", "get_code_snippet", "query_graph", "search_graph",
+            "get_architecture", "get_graph_schema", "get_database_schema", "generate_db_erd",
+            "get_table_data", "search_database_graph", "get_engineering_context",
+            "inspect_session", "inspect_change_impact", "inspect_related_failures",
+            "inspect_correction_history", "inspect_engineering_patterns",
+            "check_index_coverage", "index_status"
+        };
+        for (size_t i = 0; i < sizeof(allowed_tools) / sizeof(allowed_tools[0]); i++) {
+            if (strcmp(name_text, allowed_tools[i]) == 0) {
+                allowed = true;
+                break;
+            }
+        }
+    }
     yyjson_doc_free(document);
     return allowed;
 }
@@ -1911,6 +2009,11 @@ static void dispatch_request(cbm_http_server_t *srv, cbm_http_conn_t *c,
     /* POST /rpc → JSON-RPC dispatch (reuses existing MCP tools) */
     if (is_post && cbm_http_path_match(req->path, "/rpc")) {
         handle_rpc(c, req, srv->mcp);
+        return;
+    }
+
+    if (is_get && cbm_http_path_match(req->path, "/api/layout-context*")) {
+        handle_api_layout_context(c, req);
         return;
     }
 
